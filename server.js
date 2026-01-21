@@ -13,9 +13,10 @@ const PORT = process.env.PORT || 3000;
 /* ====== DB ====== */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production"
-    ? { rejectUnauthorized: false }
-    : false
+  ssl:
+    process.env.NODE_ENV === "production"
+      ? { rejectUnauthorized: false }
+      : false,
 });
 
 /* ====== MIDDLEWARE ====== */
@@ -32,9 +33,9 @@ const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
   filename: (_, file, cb) => {
     const ext = path.extname(file.originalname);
-    const name = Date.now() + "-" + Math.round(Math.random()*1e9);
+    const name = Date.now() + "-" + Math.round(Math.random() * 1e9);
     cb(null, name + ext);
-  }
+  },
 });
 
 const upload = multer({ storage });
@@ -59,7 +60,14 @@ app.get("/registros", async (_, res) => {
 // INSERTAR (con archivo)
 app.post("/registro", upload.single("archivo"), async (req, res) => {
   try {
-    const { tipo, detalle, monto } = req.body;
+    const { tipo, detalle } = req.body;
+
+    // ---- monto: parse + regla (si > 200 dividir por 1000)
+    let monto = Number(String(req.body?.monto ?? "").replace(",", "."));
+    if (!Number.isFinite(monto)) {
+      return res.status(400).json({ error: "Monto inválido" });
+    }
+    if (monto > 200) monto = monto / 1000;
 
     const archivo_url = req.file
       ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
