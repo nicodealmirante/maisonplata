@@ -13,21 +13,17 @@ const PORT = process.env.PORT || 3000;
 /* ====== DB ====== */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl:
-    process.env.NODE_ENV === "production"
-      ? { rejectUnauthorized: false }
-      : false,
+  ssl: process.env.NODE_ENV === "production"
+    ? { rejectUnauthorized: false }
+    : false
 });
 
-/* ====== MIDDLEWARE ====== */
 app.use(cors());
 app.use(express.json());
 
 /* ====== UPLOADS ====== */
 const UPLOAD_DIR = "./uploads";
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR);
-}
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
@@ -35,58 +31,100 @@ const storage = multer.diskStorage({
     const ext = path.extname(file.originalname);
     const name = Date.now() + "-" + Math.round(Math.random() * 1e9);
     cb(null, name + ext);
-  },
+  }
 });
-
 const upload = multer({ storage });
 
-app.use("/uploads", express.static(path.resolve(UPLOAD_DIR)));
+app.use("/uploads", express.static(UPLOAD_DIR));
 
-/* ====== ROUTES ====== */
+/* ====== HELPERS ====== */
+function publicFileUrl(req, filename) {
+  if (!filename) return null;
+  // Railway normalmente expone con el mismo host
+  return `${req.protocol}://${req.get("host")}/uploads/${filename}`;
+}
 
-// HEALTH
-app.get("/", (_, res) => {
-  res.send("Backend OK");
-});
-
-// LISTAR
-app.get("/registros", async (_, res) => {
-  const { rows } = await pool.query(
-    "SELECT * FROM registros ORDER BY created_at DESC"
-  );
-  res.json(rows);
-});
-
-// INSERTAR (con archivo)
+/* =========================
+   POST /registro (CREAR)
+========================= */
 app.post("/registro", upload.single("archivo"), async (req, res) => {
   try {
-    const { tipo, detalle } = req.body;
+    const { tipo, detalle, monto } = req.body;
+    if (!tipo || !monto) return res.status(400).json({ ok:false, error:"Faltan campos" });
 
-    // ---- monto: parse + regla (si > 200 dividir por 1000)
-    let monto = Number(String(req.body?.monto ?? "").replace(",", "."));
-    if (!Number.isFinite(monto)) {
-      return res.status(400).json({ error: "Monto inválido" });
-    }
-    if (monto > 200) monto = monto / 1000;
+    const archivo_url = req.file ? publicFileUrl(req, req.file.filename) : null;
 
-    const archivo_url = req.file
-      ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
-      : null;
+    const q = `
+      INSERT INTO registros (tipo, detalle, monto, archivo_url, activo, created_at)
+      VALUES ($1, $2, $3, $4, TRUE, NOW())
+      RETURNING *
+    `;
+    const values = [tipo, detalle || "", Number(monto), archivo_url];
+    const r = await pool.query(q, values);
 
-    await pool.query(
-      `INSERT INTO registros (tipo, detalle, monto, archivo_url)
-       VALUES ($1,$2,$3,$4)`,
-      [tipo, detalle, monto, archivo_url]
-    );
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Error guardando registro" });
+    res.json({ ok:true, data:r.rows[0] });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:"Error creando registro" });
   }
 });
 
-/* ====== START ====== */
+/* =========================
+   GET /registros (LISTAR)
+========================= */
+app.get("/registros", async (_req, res) => {
+  try {
+    const q = `
+      SELECT id, tipo, detalle, monto, archivo_url, activo, created_at
+      FROM registros
+      ORDER BY created_at DESC
+    `;
+    const r = await pool.query(q);
+    res.json(r.rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:"Error listando registros" });
+  }
+});
+
+/* =========================
+   PATCH /registro/:id/disable
+========================= */
+app.patch("/registro/:id/disable", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ ok:false, error:"ID inválido" });
+
+    const q = `UPDATE registros SET activo = FALSE WHERE id = $1 RETURNING *`;
+    const r = await pool.query(q, [id]);
+
+    if (!r.rows.length) return res.status(404).json({ ok:false, error:"No existe" });
+    res.json({ ok:true, data:r.rows[0] });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:"Error deshabilitando" });
+  }
+});
+
+/* =========================
+   PATCH /registro/:id/enable (opcional)
+========================= */
+app.patch("/registro/:id/enable", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ ok:false, error:"ID inválido" });
+
+    const q = `UPDATE registros SET activo = TRUE WHERE id = $1 RETURNING *`;
+    const r = await pool.query(q, [id]);
+
+    if (!r.rows.length) return res.status(404).json({ ok:false, error:"No existe" });
+    res.json({ ok:true, data:r.rows[0] });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok:false, error:"Error habilitando" });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log("Backend escuchando en", PORT);
+  console.log("🌐 API activa en puerto", PORT);
 });
